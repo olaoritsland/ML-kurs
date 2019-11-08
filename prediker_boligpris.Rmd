@@ -1,0 +1,241 @@
+---
+title: "Prediker boligpriser"
+author: "Ola T. Øritsland"
+date: '`r lubridate::today()`'
+output: 
+  html_document:
+    df_print: paged
+    theme: paper
+    number_sections: true
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    
+---
+
+
+```{r setup, include = FALSE}
+library(tidyverse)
+library(lubridate)
+library(parsnip)
+library(yardstick)
+library(readxl)
+library(recipes)
+library(rsample)
+library(kableExtra)
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+# Hent og klargjør data
+```{r Hent data}
+# Read all excel-files
+ads_raw <- read_excel("input/ads.xlsx")
+geo_raw <- read_excel("input/geo.xlsx")
+zip_raw <- read_excel("input/zip.xlsx")
+inc_raw <- read_excel("input/income.xlsx")
+att_raw <- read_excel("input/attributes.xlsx")
+
+# Select relevant columns
+municipalities <- geo_raw %>% 
+  select(ad_id, kommune_no, kommune_name, fylke_no, fylke_name)
+
+income <- inc_raw %>% 
+  select(zip_no = postnr, avg_income = gjsnitt_inntekt, avg_fortune = gjsnitt_formue)
+
+# Join data
+ads <- ads_raw %>% 
+  select(-ad_title, -ad_address, -ad_url, -ad_img) %>%
+  left_join(municipalities, by = "ad_id") %>% 
+  left_join(zip_raw, by = "ad_id") %>% 
+  left_join(income, by = "zip_no") %>% 
+  left_join(att_raw, by = "ad_id") 
+
+# Find mean of avg_income and avg_fortune by zip_no
+avg_financials <- ads %>% 
+  group_by(zip_name) %>% 
+  summarise(impute_avg_income = mean(avg_income, na.rm = T), impute_avg_fortune = mean(avg_fortune, na.rm = T))
+
+# If avg_income or avg_fortune is missing, replace with mean (above)
+ads <- ads %>% 
+  left_join(avg_financials, by = "zip_name") %>% 
+  mutate(avg_income = if_else(is.na(avg_income), impute_avg_income, avg_income),
+         avg_fortune = if_else(is.na(avg_fortune), impute_avg_fortune, avg_fortune)) %>% 
+  select(-impute_avg_income, - impute_avg_fortune)
+
+# Remove unnecesarry objects
+rm(ads_raw, geo_raw, zip_raw, inc_raw, att_raw, income, municipalities, avg_financials)
+ads <- ads %>%
+  replace_na(list(ad_debt = 0,
+                  ad_expense = 0)) %>%
+  mutate(
+    ad_tot_price         = ad_price + ad_debt,
+    ad_tot_price_per_sqm = ad_tot_price / ad_sqm,
+    ad_bedrooms          = parse_number(ad_bedrooms)
+  )
+
+# Split in train/test
+set.seed(42)
+
+finn_split     <- initial_split(ads)
+finn_train_raw <- training(finn_split)
+finn_test_raw  <- testing(finn_split)
+```
+
+
+# EDA
+
+### Soverom
+Datasettet (ads) består av 
+`r ads %>% filter(is.na(ad_bedrooms)) %>% summarise(n = n()) %>% pull()` NA's for 'ad_bedrooms'.
+Jeg imputer disse missing-verdiene for antall soverom som en funksjon av antall kvadratmeter. Denne funksjonen finner jeg ved å tilpasse en glm (ad_bedrooms ~ ad_sqm). 
+```{r}
+ads %>% 
+  filter(ad_sqm < 300,
+         ad_bedrooms < 10) %>% 
+  ggplot(aes(ad_sqm, ad_bedrooms)) +
+  geom_jitter(color = 'forestgreen', alpha = 0.1) +
+  geom_smooth(color = 'black') +
+  theme_light() 
+```
+
+
+### Inntekt og formue
+Datasettet inneholder 305 observasjoner med NA-verdier for inntekt og formue. Dette ser ut til å være et resultat av eldre postnr (zip_no) som ikke finnes i inntekts- og formuedataen. Noen av disse postnumrene har inntekts- og formuedata for poststed (zip_name). Jeg joiner derfor inn et snitt av disse som erstatter avg_income og avg_fortune dersom disse er NA. Deretter gjenstår det ca. 54 NAs. Disse blir imputet med median i step-funksjon i recipe.
+
+### ad_sqm_use
+Har 3053 NAs. Jeg beregner en median av den relative forskjellen mellom ad_sqm og ad_sqm_use og bruker denne ratioen til å replace NA.
+```{r}
+ads %>% 
+  select(ad_sqm, ad_sqm_use) %>% 
+  mutate(diff_rate = ad_sqm_use/ad_sqm) %>% 
+  summarise(median = median(diff_rate, na.rm = T)) %>% 
+  pull()
+```
+
+
+### Diverse
+9 av variablene i datasettet (ads) har like mange NA's (2937). De resterence NA-verdiene blir imputet med mode og median for hhv. faktor og numeriske features.
+
+
+
+# Datavask
+
+## Recipe
+```{r}
+xg_recipe <- recipe(ad_tot_price ~ ., data = finn_train_raw) %>% 
+  step_mutate(ad_home_type = fct_lump(ad_home_type, 4),
+              ad_owner_type = fct_lump(ad_owner_type, 3), 
+              ad_bedrooms = if_else(is.na(ad_bedrooms), 
+                                    round(0.886 + ad_sqm * 0.02, 0), 
+                                    ad_bedrooms),
+              ad_sqm_use = if_else(is.na(ad_sqm_use), ad_sqm * 1.05, ad_sqm_use),
+              kommune_name  = fct_lump(kommune_name, 100)) %>%
+  step_medianimpute(avg_fortune, avg_income) %>% 
+  step_modeimpute(all_nominal()) %>% 
+  step_medianimpute(all_numeric()) %>% 
+  # step_integer(ad_home_type, ad_owner_type, kommune_name) %>% 
+  step_rm(ad_id, 
+          ad_price,
+          ad_tot_price_per_sqm,
+          ad_debt, 
+          kommune_no, 
+          kommune_name, 
+          fylke_name, 
+          zip_no, 
+          zip_name) %>% 
+  prep()
+```
+
+
+## Bake
+```{r}
+finn_train <- bake(xg_recipe, finn_train_raw)
+finn_test  <- bake(xg_recipe, finn_test_raw)
+```
+
+
+# Tren modell
+```{r}
+xg_mod <- boost_tree(mode = "regression") %>% 
+                     #trees = 2000,
+                     #min_n = 3,
+                     #tree_depth = 1,
+                     #learn_rate = 0.15,
+                     #loss_reduction = 0.9) %>% 
+  set_engine("xgboost", tree_method = "exact") %>% 
+  fit(ad_tot_price ~ ., data = finn_train)
+```
+
+
+# Test modell
+```{r}
+prediction <- predict(xg_mod, finn_test) %>% 
+  bind_cols(finn_test_raw) %>% 
+  rename(estimate     = .pred, 
+         truth        = ad_tot_price) %>% 
+  mutate(abs_dev      = abs(truth - estimate),
+         abs_dev_perc = abs_dev/truth)
+```
+
+
+# Evaluer modell
+
+## Metrics
+```{r, echo = FALSE}
+multi_metric <- metric_set(mape, rmse, mae, rsq)
+
+prediction %>%
+  multi_metric(truth = truth, estimate = estimate) %>% 
+  mutate(.estimate = round(.estimate, 2)) %>% 
+  select(-.estimator) %>%
+  knitr::kable() %>% 
+  kable_styling(full_width = FALSE, position = "left")
+```
+
+
+## Partial dependency
+#```{r, echo = FALSE}
+#xg_mod$fit %>%
+#  pdp::partial(pred.var = "avg_income", train = finn_train) %>%
+#  autoplot() +
+#  theme_light()
+#```
+
+
+## Variable importance
+```{r echo = FALSE}
+xgboost::xgb.importance(model = xg_mod$fit) %>%
+  xgboost::xgb.ggplot.importance(top_n = 10) +
+  theme_light()
+```
+
+
+## Distribution of predicted vs. observed {.tabset}
+
+### Aggregated
+```{r, echo = FALSE}
+prediction %>% 
+  select(estimate, truth) %>% 
+  rownames_to_column(var = "id") %>% 
+  pivot_longer(-id, names_to = "type", values_to = "value") %>% 
+  ggplot(aes(x = value, fill = type)) +
+  geom_density(alpha = 0.3) +
+  theme_light()
+```
+
+
+### By fylke
+```{r, echo = FALSE}
+prediction %>% 
+  select(estimate, truth, fylke_name) %>% 
+  rownames_to_column(var = "id") %>% 
+  pivot_longer(-c(id, fylke_name), names_to = "type", values_to = "value") %>% 
+  ggplot(aes(x = value, fill = type)) +
+  geom_density(alpha = 0.3) +
+  facet_wrap(~fylke_name)
+```
+

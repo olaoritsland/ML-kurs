@@ -13,6 +13,9 @@ lm_recipe <- recipe(ad_tot_price ~. , data = finn_train_raw) %>%
               bedrooms_missing = is.na(ad_bedrooms)) %>%
   step_medianimpute(ad_bedrooms) %>%
   step_rm(ad_id) %>% 
+  step_other(kommune_name, threshold = 0.01 ) %>% 
+  step_modeimpute(all_nominal()) %>% 
+  step_medianimpute(all_numeric())
   prep()
 
 finn_train <- bake(lm_recipe, finn_train_raw)
@@ -65,8 +68,51 @@ linear_mod$fit %>%
 # Add "kommune_name" to the model. What happens? Why can this be dangerous
 # when calling the "predict"-function?
 
+linear_mod2 <- linear_reg() %>%
+  set_engine("lm") %>%
+  fit(
+    ad_tot_price ~ 
+      ad_owner_type
+    + ad_home_type
+    + ad_bedrooms
+    + ad_sqm
+    + ad_expense
+    + avg_income
+    + ad_built
+    + bedrooms_missing
+    + kommune_name,
+    data = finn_train
+  )
+
+prediction <- predict(linear_mod2, finn_test) %>%
+  bind_cols(finn_test_raw) %>%
+  rename(estimate     = .pred,
+         truth        = ad_tot_price) %>%
+  mutate(
+    dev = truth - estimate,
+    abs_dev = abs(truth - estimate),
+    abs_dev_perc = abs_dev / truth
+  )
+
+# Evaluate model
+multi_metric <- metric_set(mape, rmse, mae, rsq)
+
+prediction %>%
+  multi_metric(truth = truth, estimate = estimate)
+
+# Check out the pdp-plot
+# Note how unrealistic this is - it will just keep increasing...
+linear_mod2$fit %>%
+  pdp::partial(pred.var = "avg_income", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+
+
+
 # 2
 # Use step_other on the "kommune_name"-variable. Set a reasonable threshold-value.
+finn_train_raw %>% count(kommune_name) %>% mutate(Percent = n/sum(n)) %>% arrange(n)
+
 
 # 3
 # Change the "built" variable to "years_since_built". 
@@ -89,7 +135,7 @@ rf_recipe <- recipe(ad_tot_price ~. , data = finn_train_raw) %>%
   step_modeimpute(all_nominal()) %>% 
   step_rm(ad_id, 
           ad_price,
-          ad_tot_price_per_sqm,
+          #ad_tot_price_per_sqm,
           ad_debt, 
           kommune_no, 
           kommune_name, 
@@ -103,7 +149,7 @@ finn_test  <- bake(rf_recipe, finn_test_raw)
 
 # Note: in engine call we can send in ranger-specific arguments,
 # e.g. to specify that we want importance. See ?ranger for more options
-ranger_mod <- rand_forest(mode = "regression", trees = 200) %>% 
+ranger_mod <- rand_forest(mode = "regression", trees = 200, mtry = 20) %>% 
   set_engine("ranger", importance = "impurity") %>% 
   fit(ad_tot_price ~ ., data = finn_train)
 
@@ -185,7 +231,7 @@ finn_test  <- bake(xg_recipe, finn_test_raw)
 xg_mod <- boost_tree(mode = "regression",
                      trees = 300,
                      min_n = 2,
-                     tree_depth = 6,
+                     tree_depth = 1,
                      learn_rate = 0.15,
                      loss_reduction = 0.9) %>% 
   set_engine("xgboost", tree_method = "exact") %>% 
