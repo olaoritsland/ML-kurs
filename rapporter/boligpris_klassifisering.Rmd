@@ -1,0 +1,171 @@
+---
+title: "Klassifisering av boligpris"
+author: "Ola T. Øritsland"
+date: '`r lubridate::today()`'
+output: 
+  html_document:
+    df_print: paged
+    theme: paper
+    number_sections: true
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+    
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(lubridate)
+library(parsnip)
+library(yardstick)
+library(readxl)
+library(recipes)
+library(rsample)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Hent og klargjør data
+```{r Hent data}
+# Read all excel-files
+ads_raw <- read_excel("input/ads.xlsx")
+geo_raw <- read_excel("input/geo.xlsx")
+zip_raw <- read_excel("input/zip.xlsx")
+inc_raw <- read_excel("input/income.xlsx")
+att_raw <- read_excel("input/attributes.xlsx")
+
+# Select relevant columns
+municipalities <- geo_raw %>% 
+  select(ad_id, kommune_no, kommune_name, fylke_no, fylke_name)
+
+income <- inc_raw %>% 
+  select(zip_no = postnr, avg_income = gjsnitt_inntekt, avg_fortune = gjsnitt_formue)
+
+# Join data
+ads <- ads_raw %>% 
+  select(-ad_title, -ad_address, -ad_url, -ad_img) %>%
+  left_join(municipalities, by = "ad_id") %>% 
+  left_join(zip_raw, by = "ad_id") %>% 
+  left_join(income, by = "zip_no") %>% 
+  left_join(att_raw, by = "ad_id") 
+
+# Find mean of avg_income and avg_fortune by zip_no
+avg_financials <- ads %>% 
+  group_by(zip_name) %>% 
+  summarise(impute_avg_income = mean(avg_income, na.rm = T), impute_avg_fortune = mean(avg_fortune, na.rm = T))
+
+# If avg_income or avg_fortune is missing, replace with mean (above)
+ads <- ads %>% 
+  left_join(avg_financials, by = "zip_name") %>% 
+  mutate(avg_income = if_else(is.na(avg_income), impute_avg_income, avg_income),
+         avg_fortune = if_else(is.na(avg_fortune), impute_avg_fortune, avg_fortune)) %>% 
+  select(-impute_avg_income, - impute_avg_fortune)
+
+# Remove unnecesarry objects
+rm(ads_raw, geo_raw, zip_raw, inc_raw, att_raw, income, municipalities, avg_financials)
+ads <- ads %>%
+  replace_na(list(ad_debt = 0,
+                  ad_expense = 0)) %>%
+  mutate(
+    ad_tot_price         = ad_price + ad_debt,
+    ad_tot_price_per_sqm = ad_tot_price / ad_sqm,
+    ad_bedrooms          = parse_number(ad_bedrooms)
+  )
+
+# Split in train/test
+set.seed(42)
+
+finn_split     <- initial_split(ads)
+finn_train_raw <- training(finn_split)
+finn_test_raw  <- testing(finn_split)
+```
+
+
+# EDA
+
+
+
+
+
+
+# Datavask
+
+## Recipe
+```{r}
+glm_recipe <- recipe(ad_tot_price ~. , data = finn_train_raw) %>% 
+  step_mutate(ad_home_type  = fct_lump(ad_home_type, 4),
+              ad_owner_type = fct_lump(ad_owner_type, 2),
+              bedrooms_missing = is.na(ad_bedrooms),
+              is_expensive = as.factor(ad_tot_price > 4000000)) %>%
+  step_medianimpute(all_numeric()) %>%
+  step_modeimpute(all_nominal()) %>% 
+  step_rm(ad_id) %>% 
+  prep()
+```
+
+
+## Bake
+```{r}
+finn_train <- bake(glm_recipe, finn_train_raw)
+finn_test  <- bake(glm_recipe, finn_test_raw)
+```
+
+
+# Tren modell
+```{r}
+glm_mod <- logistic_reg() %>%
+  set_engine("glm") %>%
+  fit(
+    is_expensive ~ 
+      ad_owner_type
+    + ad_home_type
+    + ad_bedrooms
+    + ad_sqm
+    + ad_expense
+    + avg_income
+    + ad_built
+    + bedrooms_missing,
+    data = finn_train
+  )
+```
+
+
+# Test modell
+```{r}
+prediction <- predict(glm_mod, finn_test, type = "prob") %>% 
+  bind_cols(finn_test) %>% 
+  rename(estimate     = .pred_TRUE, 
+         truth        = is_expensive)
+```
+
+
+# Evaluer modell
+
+## Metrics
+```{r, echo = FALSE}
+prediction %>%
+  yardstick::roc_auc(truth, estimate)
+
+prediction %>%
+  yardstick::roc_curve(truth = truth, estimate = estimate, na_rm = T) %>% 
+  autoplot()
+```
+
+
+# Partial dependency
+```{r, echo = FALSE}
+
+```
+
+
+## Variable importance
+```{r echo = FALSE}
+
+```
+
+
+
+
