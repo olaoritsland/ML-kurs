@@ -155,11 +155,74 @@ prediction %>%
 ```
 
 
-# Partial dependency
-```{r, echo = FALSE}
+## Partial dependency  {.tabset}
 
+### avg_income 
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "avg_income", train = finn_train) %>%
+  autoplot() +
+  theme_light()
 ```
 
+
+### ad_owner_type
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_owner_type", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### ad_home_type
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_home_type", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### ad_bedrooms
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_bedrooms", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### ad_sqm
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_sqm", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### ad_expense
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_expense", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+
+### ad_built
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_built", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+
+### bedrooms_missing
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "bedrooms_missing", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
 
 ## Variable importance
 ```{r echo = FALSE}
