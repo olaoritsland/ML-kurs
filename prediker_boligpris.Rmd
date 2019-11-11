@@ -133,20 +133,19 @@ xg_recipe <- recipe(ad_tot_price ~ ., data = finn_train_raw) %>%
                                     round(0.886 + ad_sqm * 0.02, 0), 
                                     ad_bedrooms),
               ad_sqm_use = if_else(is.na(ad_sqm_use), ad_sqm * 1.05, ad_sqm_use),
-              kommune_name  = fct_lump(kommune_name, 100)) %>%
+              kommune_name  = fct_lump(kommune_name, 6),
+              fylke_name    = fct_lump(fylke_name, 4),
+              zip_name    = fct_lump(zip_name, 4)) %>%
   step_medianimpute(avg_fortune, avg_income) %>% 
   step_modeimpute(all_nominal()) %>% 
   step_medianimpute(all_numeric()) %>% 
-  # step_integer(ad_home_type, ad_owner_type, kommune_name) %>% 
+  step_integer(ad_home_type, ad_owner_type, kommune_name, fylke_name, zip_name) %>% 
   step_rm(ad_id, 
           ad_price,
           ad_tot_price_per_sqm,
           ad_debt, 
           kommune_no, 
-          kommune_name, 
-          fylke_name, 
-          zip_no, 
-          zip_name) %>% 
+          zip_no) %>% 
   prep()
 ```
 
@@ -161,7 +160,7 @@ finn_test  <- bake(xg_recipe, finn_test_raw)
 # Tren modell
 ```{r}
 xg_mod <- boost_tree(mode = "regression") %>% 
-                     #trees = 2000,
+                     #trees = 2000) %>% 
                      #min_n = 3,
                      #tree_depth = 1,
                      #learn_rate = 0.15,
@@ -209,7 +208,7 @@ prediction %>%
 ## Variable importance
 ```{r echo = FALSE}
 xgboost::xgb.importance(model = xg_mod$fit) %>%
-  xgboost::xgb.ggplot.importance(top_n = 10) +
+  xgboost::xgb.ggplot.importance(top_n = 12) +
   theme_light()
 ```
 

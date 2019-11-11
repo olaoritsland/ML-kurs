@@ -24,7 +24,7 @@ library(yardstick)
 library(readxl)
 library(recipes)
 library(rsample)
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
 ```
 
 
@@ -72,8 +72,9 @@ ads <- ads %>%
   mutate(
     ad_tot_price         = ad_price + ad_debt,
     ad_tot_price_per_sqm = ad_tot_price / ad_sqm,
-    ad_bedrooms          = parse_number(ad_bedrooms)
-  )
+    ad_bedrooms          = parse_number(ad_bedrooms),
+    log_ad_tot_price     = log(ad_tot_price)
+    )
 
 # Split in train/test
 set.seed(42)
@@ -95,9 +96,15 @@ finn_test_raw  <- testing(finn_split)
 
 ## Recipe
 ```{r}
-glm_recipe <- recipe(ad_tot_price ~. , data = finn_train_raw) %>% 
+glm_recipe <- recipe(log_ad_tot_price ~. , data = finn_train_raw) %>% 
   step_mutate(ad_home_type  = fct_lump(ad_home_type, 4),
-              ad_owner_type = fct_lump(ad_owner_type, 2),
+              ad_owner_type = fct_lump(ad_owner_type, 3),
+              log_ad_sqm = log(ad_sqm),
+              log_ad_sqm_use = log(ad_sqm_use),
+              sq_ad_sqm_use = ad_sqm_use^2,
+              fylke_name = fct_lump(fylke_name, 4),
+              kommune_name = fct_lump(kommune_name, 6),
+              zip_name = fct_lump(zip_name, 1),
               bedrooms_missing = is.na(ad_bedrooms),
               is_expensive = as.factor(ad_tot_price > 4000000)) %>%
   step_medianimpute(all_numeric()) %>%
@@ -123,11 +130,16 @@ glm_mod <- logistic_reg() %>%
       ad_owner_type
     + ad_home_type
     + ad_bedrooms
-    + ad_sqm
+    + log_ad_sqm
+    + ad_sqm_use
     + ad_expense
     + avg_income
+    + avg_fortune
     + ad_built
-    + bedrooms_missing,
+    + bedrooms_missing
+    + fylke_name
+    + kommune_name 
+    + zip_name,
     data = finn_train
   )
 ```
@@ -143,6 +155,13 @@ prediction <- predict(glm_mod, finn_test, type = "prob") %>%
 
 
 # Evaluer modell
+
+## Summary
+
+```{r}
+summary(glm_mod$fit)
+```
+
 
 ## Metrics
 ```{r, echo = FALSE}
@@ -165,6 +184,14 @@ glm_mod$fit %>%
   theme_light()
 ```
 
+
+### avg_fortune
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "avg_fortune", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
 
 ### ad_owner_type
 ```{r, echo = FALSE}
@@ -198,6 +225,16 @@ glm_mod$fit %>%
   theme_light()
 ```
 
+
+### ad_sqm_use
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "ad_sqm_use", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+
 ### ad_expense
 ```{r, echo = FALSE}
 glm_mod$fit %>%
@@ -220,6 +257,31 @@ glm_mod$fit %>%
 ```{r, echo = FALSE}
 glm_mod$fit %>%
   pdp::partial(pred.var = "bedrooms_missing", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+
+### fylke_name
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "fylke_name", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### kommune_name
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "kommune_name", train = finn_train) %>%
+  autoplot() +
+  theme_light()
+```
+
+### zip_name
+```{r, echo = FALSE}
+glm_mod$fit %>%
+  pdp::partial(pred.var = "zip_name", train = finn_train) %>%
   autoplot() +
   theme_light()
 ```
