@@ -25,6 +25,7 @@ library(readxl)
 library(recipes)
 library(rsample)
 library(kableExtra)
+library(leaflet)
 
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
@@ -40,11 +41,11 @@ inc_raw <- read_excel("input/income.xlsx")
 att_raw <- read_excel("input/attributes.xlsx")
 
 # Select relevant columns
-municipalities <- geo_raw %>% 
-  select(ad_id, kommune_no, kommune_name, fylke_no, fylke_name)
+municipalities <- geo_raw  %>%
+  select(ad_id, kommune_no, kommune_name, fylke_no, fylke_name, grunnkrets_name, delomraade_name, kommune_bydel_name, landsdel_name, naering_reg_name, centrality_name, police_reg_name, health_reg_name, eco_reg_name)
 
 income <- inc_raw %>% 
-  select(zip_no = postnr, avg_income = gjsnitt_inntekt, avg_fortune = gjsnitt_formue)
+  rename(zip_no = postnr, avg_income = gjsnitt_inntekt, avg_fortune = gjsnitt_formue)
 
 # Join data
 ads <- ads_raw %>% 
@@ -88,11 +89,41 @@ finn_test_raw  <- testing(finn_split)
 
 # EDA
 
+### Map
+```{r Map}
+map <- ads %>% 
+  select(grunnkrets_name, ad_tot_price_per_sqm, lat, lng) %>% 
+  group_by(grunnkrets_name) %>% 
+  summarise(mean_lat = mean(lat, na.rm = T),
+            mean_lng = mean(lng, na.rm = T),
+            ad_tot_price_per_sqm = round(mean(ad_tot_price_per_sqm, na.rm = T)),
+            n = n()) %>% 
+  
+  # remove coords outside norway
+  filter(mean_lat > 55)
+
+# Create plot - ---------------------------------------------------------------------------
+map %>% 
+  leaflet() %>% 
+  addTiles() %>% 
+  addCircles(lng = ~ mean_lng, 
+             lat = ~ mean_lat,
+             color = ~colorQuantile("YlOrRd", ad_tot_price_per_sqm, n = 4)(ad_tot_price_per_sqm),
+             fillOpacity = 1,
+             popup = ~ paste("Name:", grunnkrets_name,
+                             "Price per sqm:", ad_tot_price_per_sqm, 
+                             "Count:", n),
+             radius = ~ad_tot_price_per_sqm/1e3) %>% 
+  addProviderTiles(providers$CartoDB.Positron) %>% 
+  addScaleBar(position = "bottomleft") 
+```
+
+
 ### Soverom
 Datasettet (ads) består av 
 `r ads %>% filter(is.na(ad_bedrooms)) %>% summarise(n = n()) %>% pull()` NA's for 'ad_bedrooms'.
 Jeg imputer disse missing-verdiene for antall soverom som en funksjon av antall kvadratmeter. Denne funksjonen finner jeg ved å tilpasse en glm (ad_bedrooms ~ ad_sqm). 
-```{r}
+```{r soverom}
 ads %>% 
   filter(ad_sqm < 300,
          ad_bedrooms < 10) %>% 
@@ -108,7 +139,7 @@ Datasettet inneholder 305 observasjoner med NA-verdier for inntekt og formue. De
 
 ### ad_sqm_use
 Har 3053 NAs. Jeg beregner en median av den relative forskjellen mellom ad_sqm og ad_sqm_use og bruker denne ratioen til å replace NA.
-```{r}
+```{r ad_sqm_use}
 ads %>% 
   select(ad_sqm, ad_sqm_use) %>% 
   mutate(diff_rate = ad_sqm_use/ad_sqm) %>% 
@@ -125,7 +156,7 @@ ads %>%
 # Datavask
 
 ## Recipe
-```{r}
+```{r recipe}
 xg_recipe <- recipe(ad_tot_price ~ ., data = finn_train_raw) %>% 
   step_mutate(ad_home_type = fct_lump(ad_home_type, 4),
               ad_owner_type = fct_lump(ad_owner_type, 3), 
@@ -151,17 +182,18 @@ xg_recipe <- recipe(ad_tot_price ~ ., data = finn_train_raw) %>%
 
 
 ## Bake
-```{r}
+```{r bake}
 finn_train <- bake(xg_recipe, finn_train_raw)
 finn_test  <- bake(xg_recipe, finn_test_raw)
 ```
 
 
 # Tren modell
-```{r}
-xg_mod <- boost_tree(mode = "regression") %>% 
-                     #trees = 2000) %>% 
-                     #min_n = 3,
+```{r train}
+xg_mod <- boost_tree(mode = "regression", 
+                     trees = 500) %>% 
+  
+                     #min_n = 3) %>% 
                      #tree_depth = 1,
                      #learn_rate = 0.15,
                      #loss_reduction = 0.9) %>% 
@@ -171,7 +203,7 @@ xg_mod <- boost_tree(mode = "regression") %>%
 
 
 # Test modell
-```{r}
+```{r test}
 prediction <- predict(xg_mod, finn_test) %>% 
   bind_cols(finn_test_raw) %>% 
   rename(estimate     = .pred, 
@@ -184,7 +216,7 @@ prediction <- predict(xg_mod, finn_test) %>%
 # Evaluer modell
 
 ## Metrics
-```{r, echo = FALSE}
+```{r evaluate, echo = FALSE}
 multi_metric <- metric_set(mape, rmse, mae, rsq)
 
 prediction %>%
@@ -206,7 +238,7 @@ prediction %>%
 
 
 ## Variable importance
-```{r echo = FALSE}
+```{r variable importance, echo = FALSE}
 xgboost::xgb.importance(model = xg_mod$fit) %>%
   xgboost::xgb.ggplot.importance(top_n = 12) +
   theme_light()

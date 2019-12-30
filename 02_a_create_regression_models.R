@@ -15,7 +15,7 @@ lm_recipe <- recipe(ad_tot_price ~. , data = finn_train_raw) %>%
   step_rm(ad_id) %>% 
   step_other(kommune_name, threshold = 0.01 ) %>% 
   step_modeimpute(all_nominal()) %>% 
-  step_medianimpute(all_numeric())
+  step_medianimpute(all_numeric()) %>% 
   prep()
 
 finn_train <- bake(lm_recipe, finn_train_raw)
